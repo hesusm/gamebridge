@@ -1,0 +1,61 @@
+name: GameBridge Windows Portable V0.9
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Locate source (repository root or uploaded ZIP)
+        shell: pwsh
+        run: |
+          if (Test-Path 'build_windows.ps1') {
+            New-Item -ItemType Directory -Force workspace | Out-Null
+            Copy-Item -Recurse -Force gamebridge,desktop_entry.py,build_windows.ps1,test_windows_gui.ps1,scripts,third_party,README_PORTABLE_UTF8.md 'workspace/'
+            $project = (Resolve-Path 'workspace').Path
+          } else {
+            $zips = @(Get-ChildItem -Path . -Filter 'GameBridge_V0.9*.zip' -File)
+            if ($zips.Count -ne 1) { throw "Expected one V0.9 source ZIP in repository root; found $($zips.Count)" }
+            Expand-Archive -LiteralPath $zips[0].FullName -DestinationPath workspace -Force
+            $project = (Resolve-Path 'workspace/GameBridge').Path
+          }
+          if (!(Test-Path (Join-Path $project 'build_windows.ps1'))) { throw 'Missing build script' }
+          "GB_PROJECT=$project" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Validate and build portable application with embedded NetBird
+        shell: pwsh
+        run: |
+          Set-Location $env:GB_PROJECT
+          ./build_windows.ps1
+      - name: Verify executable and bundled installer
+        shell: pwsh
+        run: |
+          Set-Location $env:GB_PROJECT
+          if (!(Test-Path 'dist/GameBridge/GameBridge.exe')) { throw 'Missing GameBridge.exe' }
+          if (!(Test-Path 'dist/GameBridge/installers/netbird_installer_0.80.0_windows_amd64.exe')) { throw 'NetBird installer not embedded' }
+          Get-FileHash 'dist/GameBridge/GameBridge.exe' -Algorithm SHA256
+      - name: Windows GUI smoke test
+        shell: pwsh
+        run: |
+          Set-Location $env:GB_PROJECT
+          ./test_windows_gui.ps1
+      - name: Package UTF-8 Windows ZIP
+        shell: pwsh
+        run: |
+          Set-Location $env:GB_PROJECT
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item README_PORTABLE_UTF8.md 'dist/GameBridge/使用说明_简体中文_UTF8.md'
+          Compress-Archive -Path dist/GameBridge -DestinationPath release/GameBridge-Windows-x64-portable.zip -Force
+          python scripts/verify_portable_zip.py release/GameBridge-Windows-x64-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GameBridge-Windows-x64-portable-v0.9
+          path: ${{ env.GB_PROJECT }}/release/GameBridge-Windows-x64-portable.zip
+          if-no-files-found: error
